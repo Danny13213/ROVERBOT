@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<launch>
+  <include file="$(find-pkg-share rover_bringup)/launch/sensors.launch.xml"/>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_color" output="screen"
+        args="--x 0 --y 0 --z 0 --roll 0 --pitch 0 --yaw 0 --frame-id base_link --child-frame-id camera_color_optical_frame"/>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_depth" output="screen"
+        args="--x 0 --y 0 --z 0 --roll 0 --pitch 0 --yaw 0 --frame-id base_link --child-frame-id camera_depth_optical_frame"/>
+
+  <node pkg="rtabmap_sync" exec="rgbd_sync" name="rgbd_sync" output="screen">
+    <param name="approx_sync" value="true"/>
+    <param name="approx_sync_max_interval" value="0.05"/>
+    <remap from="rgb/image" to="/camera/color/image_raw"/>
+    <remap from="rgb/camera_info" to="/camera/color/camera_info"/>
+    <remap from="depth/image" to="/camera/depth/image_raw"/>
+    <remap from="rgbd_image" to="/rgbd_image"/>
+  </node>
+
+  <node pkg="rtabmap_odom" exec="rgbd_odometry" name="rgbd_odometry" output="screen">
+    <param name="frame_id" value="base_link"/>
+    <param name="odom_frame_id" value="odom"/>
+    <param name="publish_tf" value="true"/>
+    <param name="subscribe_rgbd" value="true"/>
+    <remap from="rgbd_image" to="/rgbd_image"/>
+  </node>
+
+  <node pkg="rtabmap_slam" exec="rtabmap" name="rtabmap" output="screen">
+    <param name="frame_id" value="base_link"/>
+    <param name="subscribe_rgbd" value="true"/>
+    <param name="subscribe_rgb" value="false"/>
+    <param name="subscribe_depth" value="false"/>
+    <remap from="rgbd_image" to="/rgbd_image"/>
+    <remap from="odom" to="/odom"/>
+  </node>
+</launch>
