@@ -2,10 +2,12 @@
 <package format="3">
   <name>rover_motor</name>
   <version>1.0.0</version>
-  <description>ROVERBOT ESP32 motor interface</description>
+  <description>ROVERBOT ESP32 motor interface and manual controller</description>
   <maintainer email="rover@localhost">ROVERBOT</maintainer>
   <license>MIT</license>
+
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>
+  <depend>rcl_interfaces</depend>
   <depend>geometry_msgs</depend>
 </package>
