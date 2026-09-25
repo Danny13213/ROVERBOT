@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
