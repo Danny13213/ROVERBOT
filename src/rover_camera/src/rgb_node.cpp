@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -9,6 +11,7 @@
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/image_encodings.hpp"
+#include "std_msgs/msg/header.hpp"
 
 using namespace std::chrono_literals;
 
