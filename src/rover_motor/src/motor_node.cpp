@@ -32,6 +32,10 @@ public:
     right_pwm_ = std::clamp(right_pwm_, 0, 255);
 
     if (!open_serial()) throw std::runtime_error("Could not open ESP32 serial port");
+
+    // Opening USB serial can reset an ESP32. Give it time to boot before
+    // sending PWM and movement commands.
+    std::this_thread::sleep_for(1500ms);
     send_pwm();
     send("S\n");
 
@@ -62,8 +66,15 @@ private:
       RCLCPP_ERROR(get_logger(), "open(%s): %s", device_.c_str(), std::strerror(errno));
       return false;
     }
+
     termios tty{};
-    if (tcgetattr(fd_, &tty) != 0) return false;
+    if (tcgetattr(fd_, &tty) != 0) {
+      RCLCPP_ERROR(get_logger(), "tcgetattr(%s): %s", device_.c_str(), std::strerror(errno));
+      ::close(fd_);
+      fd_ = -1;
+      return false;
+    }
+
     cfsetospeed(&tty, B115200);
     cfsetispeed(&tty, B115200);
     tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
@@ -75,7 +86,15 @@ private:
     tty.c_iflag &= ~(IXON | IXOFF | IXANY);
     tty.c_cflag |= (CLOCAL | CREAD);
     tty.c_cflag &= ~(PARENB | PARODD | CSTOPB | CRTSCTS);
-    return tcsetattr(fd_, TCSANOW, &tty) == 0;
+
+    if (tcsetattr(fd_, TCSANOW, &tty) != 0) {
+      RCLCPP_ERROR(get_logger(), "tcsetattr(%s): %s", device_.c_str(), std::strerror(errno));
+      ::close(fd_);
+      fd_ = -1;
+      return false;
+    }
+
+    return true;
   }
 
   void send(const std::string &s) {
@@ -123,6 +142,8 @@ private:
       }
       return;
     }
+
+    // Refresh the ESP32 watchdog while ROS still has a fresh cmd_vel.
     send(std::string(1, current_command_) + "\n");
   }
 
@@ -136,15 +157,21 @@ private:
       if (p.get_name() == "left_pwm") {
         const int v = static_cast<int>(p.as_int());
         if (v < 0 || v > 255) {
-          result.successful = false; result.reason = "left_pwm must be 0..255"; return result;
+          result.successful = false;
+          result.reason = "left_pwm must be 0..255";
+          return result;
         }
-        left_pwm_ = v; pwm_changed = true;
+        left_pwm_ = v;
+        pwm_changed = true;
       } else if (p.get_name() == "right_pwm") {
         const int v = static_cast<int>(p.as_int());
         if (v < 0 || v > 255) {
-          result.successful = false; result.reason = "right_pwm must be 0..255"; return result;
+          result.successful = false;
+          result.reason = "right_pwm must be 0..255";
+          return result;
         }
-        right_pwm_ = v; pwm_changed = true;
+        right_pwm_ = v;
+        pwm_changed = true;
       }
     }
 
@@ -152,6 +179,7 @@ private:
       send_pwm();
       RCLCPP_INFO(get_logger(), "PWM updated: L=%d R=%d", left_pwm_, right_pwm_);
     }
+
     return result;
   }
 
