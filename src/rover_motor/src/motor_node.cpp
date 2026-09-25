@@ -1,14 +1,19 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fcntl.h>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <termios.h>
+#include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 
 using namespace std::chrono_literals;
@@ -81,7 +86,8 @@ private:
       const ssize_t n = ::write(fd_, p, remaining);
       if (n < 0) {
         if (errno == EINTR) continue;
-        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "Serial write failed: %s", std::strerror(errno));
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+                              "Serial write failed: %s", std::strerror(errno));
         return;
       }
       p += n;
@@ -100,13 +106,8 @@ private:
     const double z = msg->angular.z;
     char command = 'S';
 
-    if (std::abs(x) > linear_deadband_) {
-      if (x > 0.0) command = 'F';
-      else command = 'B';
-    } else if (std::abs(z) > angular_deadband_) {
-      if (z > 0.0) command = 'L';
-      else command = 'R';
-    }
+    if (std::abs(x) > linear_deadband_) command = x > 0.0 ? 'F' : 'B';
+    else if (std::abs(z) > angular_deadband_) command = z > 0.0 ? 'L' : 'R';
 
     current_command_ = command;
     last_cmd_ = now();
@@ -122,7 +123,6 @@ private:
       }
       return;
     }
-    // Refresh the ESP32 command so its own safety watchdog stays satisfied.
     send(std::string(1, current_command_) + "\n");
   }
 
@@ -131,17 +131,23 @@ private:
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
     bool pwm_changed = false;
+
     for (const auto &p : params) {
       if (p.get_name() == "left_pwm") {
-        const int v = p.as_int();
-        if (v < 0 || v > 255) { result.successful = false; result.reason = "left_pwm must be 0..255"; return result; }
+        const int v = static_cast<int>(p.as_int());
+        if (v < 0 || v > 255) {
+          result.successful = false; result.reason = "left_pwm must be 0..255"; return result;
+        }
         left_pwm_ = v; pwm_changed = true;
       } else if (p.get_name() == "right_pwm") {
-        const int v = p.as_int();
-        if (v < 0 || v > 255) { result.successful = false; result.reason = "right_pwm must be 0..255"; return result; }
+        const int v = static_cast<int>(p.as_int());
+        if (v < 0 || v > 255) {
+          result.successful = false; result.reason = "right_pwm must be 0..255"; return result;
+        }
         right_pwm_ = v; pwm_changed = true;
       }
     }
+
     if (pwm_changed) {
       send_pwm();
       RCLCPP_INFO(get_logger(), "PWM updated: L=%d R=%d", left_pwm_, right_pwm_);
@@ -160,7 +166,7 @@ private:
   rclcpp::Time last_cmd_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_;
   rclcpp::TimerBase::SharedPtr timer_;
-  OnSetParametersCallbackHandle::SharedPtr param_cb_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_;
 };
 
 int main(int argc, char **argv) {
