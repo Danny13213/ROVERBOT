@@ -8,6 +8,19 @@
     <param name="iou" value="0.45"/>
   </node>
 
+  <node pkg="rover_navigation" exec="obstacle_avoidance" name="obstacle_avoidance" output="screen">
+    <param name="caution_distance" value="1.0"/>
+    <param name="stop_distance" value="0.50"/>
+    <param name="too_close_distance" value="0.25"/>
+    <param name="scan_clearance" value="0.75"/>
+    <param name="reverse_time_s" value="0.8"/>
+    <param name="turn_time_s" value="0.65"/>
+    <param name="settle_time_s" value="0.35"/>
+    <param name="forward_speed" value="0.20"/>
+    <param name="reverse_speed" value="-0.15"/>
+    <param name="turn_speed" value="0.50"/>
+  </node>
+
   <node pkg="rover_motor" exec="motor_node" name="rover_motor" output="screen">
     <param name="device" value="/dev/ttyUSB0"/>
     <param name="left_pwm" value="120"/>
