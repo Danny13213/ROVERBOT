@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rover_bringup</name>
+  <version>1.0.0</version>
+  <description>ROVERBOT launch files</description>
+  <maintainer email="rover@localhost">ROVERBOT</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>rover_camera</exec_depend>
+  <exec_depend>rover_motor</exec_depend>
+  <exec_depend>rover_yolo</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rtabmap_sync</exec_depend>
+  <exec_depend>rtabmap_odom</exec_depend>
+  <exec_depend>rtabmap_slam</exec_depend>
+</package>
