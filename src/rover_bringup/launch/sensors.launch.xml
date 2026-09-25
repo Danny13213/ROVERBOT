@@ -1,7 +1,9 @@
 <?xml version="1.0"?>
 <launch>
+  <set_env name="OPENNI2_REDIST" value="/opt/openni2-orbbec"/>
+
   <node pkg="rover_camera" exec="rgb_node" name="rgb_camera" output="screen">
-    <param name="camera_index" value="0"/>
+    <param name="device" value="0"/>
     <param name="width" value="640"/>
     <param name="height" value="480"/>
     <param name="fps" value="30"/>
@@ -13,6 +15,5 @@
     <param name="height" value="480"/>
     <param name="fps" value="30"/>
     <param name="frame_id" value="camera_depth_optical_frame"/>
-    <param name="openni_redist" value="/opt/openni2-orbbec"/>
   </node>
 </launch>
