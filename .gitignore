@@ -1,0 +1,13 @@
+build/
+install/
+log/
+
+*.engine
+*.pt
+*.onnx
+
+.vscode/
+.idea/
+
+*.swp
+*~
