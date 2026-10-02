@@ -51,5 +51,9 @@ set_target_properties(depth_node PROPERTIES
   INSTALL_RPATH "${OPENNI2_LIBRARY_DIR}"
 )
 
-install(TARGETS rgb_node depth_node DESTINATION lib/${PROJECT_NAME})
+add_executable(web_stream_node src/web_stream_node.cpp)
+ament_target_dependencies(web_stream_node rclcpp sensor_msgs cv_bridge)
+target_link_libraries(web_stream_node ${OpenCV_LIBS})
+
+install(TARGETS rgb_node depth_node web_stream_node DESTINATION lib/${PROJECT_NAME})
 ament_package()
