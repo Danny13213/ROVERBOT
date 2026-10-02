@@ -3,7 +3,7 @@
   <name>rover_yolo</name>
   <version>1.0.0</version>
   <description>TensorRT YOLO inference node for ROVERBOT</description>
-  <maintainer email="rover@localhost">ROVERBOT</maintainer>
+  <maintainer email="danny.ouyang@stonybrook.edu">Danny Ouyang</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -11,4 +11,8 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>cv_bridge</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>
