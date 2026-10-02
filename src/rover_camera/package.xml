@@ -3,7 +3,7 @@
   <name>rover_camera</name>
   <version>1.0.0</version>
   <description>Orbbec Astra Pro RGB and depth publishers for ROVERBOT</description>
-  <maintainer email="rover@localhost">ROVERBOT</maintainer>
+  <maintainer email="danny.ouyang@stonybrook.edu">Danny Ouyang</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
