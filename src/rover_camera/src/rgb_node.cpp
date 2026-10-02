@@ -1,17 +1,16 @@
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
 #include <opencv2/opencv.hpp>
-#include "cv_bridge/cv_bridge.h"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/image_encodings.hpp"
-#include "std_msgs/msg/header.hpp"
 
 using namespace std::chrono_literals;
 
@@ -33,14 +32,24 @@ public:
 
     cap_.open(device_, cv::CAP_V4L2);
     if (!cap_.isOpened()) throw std::runtime_error("Could not open Astra RGB V4L2 camera");
+
+    cap_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
     cap_.set(cv::CAP_PROP_FRAME_WIDTH, width_);
     cap_.set(cv::CAP_PROP_FRAME_HEIGHT, height_);
     cap_.set(cv::CAP_PROP_FPS, fps_);
     cap_.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
+    cv::Mat test;
+    if (!cap_.read(test) || test.empty()) {
+      throw std::runtime_error("Astra RGB opened but no valid frame was received");
+    }
+
+    width_ = test.cols;
+    height_ = test.rows;
+
     const auto period = std::chrono::milliseconds(std::max(1, 1000 / std::max(1, fps_)));
     timer_ = create_wall_timer(period, std::bind(&RgbNode::capture, this));
-    RCLCPP_INFO(get_logger(), "RGB camera opened: /dev/video%d %dx%d @ %d FPS",
+    RCLCPP_INFO(get_logger(), "RGB camera opened: /dev/video%d %dx%d @ requested %d FPS",
                 device_, width_, height_, fps_);
   }
 
@@ -66,12 +75,22 @@ private:
       return;
     }
 
+    if (!frame.isContinuous()) frame = frame.clone();
+
     const auto stamp = now();
-    std_msgs::msg::Header header;
-    header.stamp = stamp;
-    header.frame_id = frame_id_;
-    auto image = cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, frame).toImageMsg();
-    image_pub_->publish(*image);
+    sensor_msgs::msg::Image image;
+    image.header.stamp = stamp;
+    image.header.frame_id = frame_id_;
+    image.height = static_cast<uint32_t>(frame.rows);
+    image.width = static_cast<uint32_t>(frame.cols);
+    image.encoding = sensor_msgs::image_encodings::BGR8;
+    image.is_bigendian = false;
+    image.step = static_cast<sensor_msgs::msg::Image::_step_type>(frame.cols * 3);
+    const size_t bytes = static_cast<size_t>(image.step) * image.height;
+    image.data.resize(bytes);
+    std::memcpy(image.data.data(), frame.data, bytes);
+
+    image_pub_->publish(image);
     info_pub_->publish(camera_info(stamp, frame.cols, frame.rows));
   }
 
