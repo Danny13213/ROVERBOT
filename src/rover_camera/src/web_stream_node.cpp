@@ -1,6 +1,5 @@
 #include <atomic>
 #include <chrono>
-#include <cstring>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -13,11 +12,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
-#include "cv_bridge/cv_bridge.h"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 
@@ -49,11 +46,17 @@ public:
 
 private:
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
+    if (msg->encoding != "bgr8" || msg->data.empty() || msg->width == 0 || msg->height == 0) return;
+    const size_t needed = static_cast<size_t>(msg->step) * msg->height;
+    if (msg->data.size() < needed || msg->step < msg->width * 3) return;
+
     try {
-      auto cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
+      cv::Mat image(
+        static_cast<int>(msg->height), static_cast<int>(msg->width), CV_8UC3,
+        const_cast<unsigned char *>(msg->data.data()), static_cast<size_t>(msg->step));
       std::vector<uchar> encoded;
       const std::vector<int> params{cv::IMWRITE_JPEG_QUALITY, quality_};
-      if (cv::imencode(".jpg", cv_ptr->image, encoded, params)) {
+      if (cv::imencode(".jpg", image, encoded, params)) {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         jpeg_ = std::move(encoded);
         ++frame_id_;
@@ -74,9 +77,7 @@ private:
     return true;
   }
 
-  void send_text(int client, const std::string &text) {
-    send_all(client, text.data(), text.size());
-  }
+  void send_text(int client, const std::string &text) { send_all(client, text.data(), text.size()); }
 
   void handle_client(int client) {
     char request[2048]{};
@@ -107,9 +108,9 @@ private:
         }
         last_id = id;
         std::ostringstream hdr;
-        hdr << "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-            << frame.size() << "\r\n\r\n";
-        if (!send_all(client, hdr.str().data(), hdr.str().size()) ||
+        hdr << "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " << frame.size() << "\r\n\r\n";
+        const std::string header = hdr.str();
+        if (!send_all(client, header.data(), header.size()) ||
             !send_all(client, frame.data(), frame.size()) ||
             !send_all(client, "\r\n", 2)) break;
       }
@@ -151,10 +152,7 @@ private:
       sockaddr_in client_addr{};
       socklen_t client_len = sizeof(client_addr);
       const int client = ::accept(server_fd_, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
-      if (client < 0) {
-        if (running_) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        continue;
-      }
+      if (client < 0) continue;
       std::thread([this, client]() {
         handle_client(client);
         ::shutdown(client, SHUT_RDWR);
