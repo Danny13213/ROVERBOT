@@ -3,8 +3,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,8 @@ public:
     person_hold_s_ = declare_parameter<double>("person_hold_s", 0.75);
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+    status_pub_ = create_publisher<std_msgs::msg::String>("/navigation/status", 10);
+
     depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
       "/camera/depth/image_raw", 10,
       std::bind(&ObstacleAvoidance::depth_callback, this, std::placeholders::_1));
@@ -72,9 +76,6 @@ private:
 
   void yolo_callback(const std_msgs::msg::String::SharedPtr msg) {
     if (!stop_for_person_) return;
-
-    // rover_yolo publishes JSON such as:
-    // [{"class":"person","confidence":0.91,...}]
     if (msg->data.find("\"class\":\"person\"") != std::string::npos) {
       last_person_seen_ = now();
       if (!person_blocking_) {
@@ -114,11 +115,22 @@ private:
     return samples[idx] / 1000.0;
   }
 
-  void publish(double linear, double angular) {
+  void publish_cmd(double linear, double angular) {
     geometry_msgs::msg::Twist cmd;
     cmd.linear.x = linear;
     cmd.angular.z = angular;
     cmd_pub_->publish(cmd);
+  }
+
+  void publish_status(const std::string &mode, double distance) {
+    std_msgs::msg::String msg;
+    std::ostringstream out;
+    out << mode;
+    if (std::isfinite(distance)) {
+      out << " | " << std::fixed << std::setprecision(2) << distance << " m";
+    }
+    msg.data = out.str();
+    status_pub_->publish(msg);
   }
 
   void set_state(State s) {
@@ -130,12 +142,16 @@ private:
 
   void control_loop() {
     if (!have_depth_ || (now() - last_depth_).seconds() > 0.5) {
-      publish(0.0, 0.0);
+      publish_cmd(0.0, 0.0);
+      publish_status("DEPTH LOST - STOP", std::numeric_limits<double>::infinity());
       return;
     }
 
+    const double center = region_distance(0.33, 0.67);
+
     if (person_recent()) {
-      publish(0.0, 0.0);
+      publish_cmd(0.0, 0.0);
+      publish_status("PERSON DETECTED - STOP", center);
       return;
     }
 
@@ -145,38 +161,45 @@ private:
       RCLCPP_INFO(get_logger(), "Person no longer detected: resuming depth navigation");
     }
 
-    const double center = region_distance(0.33, 0.67);
-
     switch (state_) {
       case State::DRIVE:
         if (center <= too_close_distance_) {
-          publish(0.0, 0.0);
+          publish_cmd(0.0, 0.0);
+          publish_status("TOO CLOSE - SCANNING", center);
           RCLCPP_WARN(get_logger(), "TOO CLOSE %.2f m: stop, scan left/right before reversing", center);
           set_state(State::STOP_BEFORE_SCAN);
         } else if (center <= stop_distance_) {
-          publish(0.0, 0.0);
+          publish_cmd(0.0, 0.0);
+          publish_status("OBSTACLE - AVOIDING", center);
           avoid_left_ = region_distance(0.00, 0.33) >= region_distance(0.67, 1.00);
           set_state(State::AVOID_TURN);
+        } else if (center <= caution_distance_) {
+          publish_cmd(forward_speed_, 0.0);
+          publish_status("CAUTION", center);
         } else {
-          publish(forward_speed_, 0.0);
+          publish_cmd(forward_speed_, 0.0);
+          publish_status("PATH CLEAR", center);
         }
         break;
 
       case State::STOP_BEFORE_SCAN:
-        publish(0.0, 0.0);
+        publish_cmd(0.0, 0.0);
+        publish_status("STOPPED - PREPARING SCAN", center);
         if (elapsed() >= settle_time_s_) set_state(State::TURN_LEFT_SCAN);
         break;
 
       case State::TURN_LEFT_SCAN:
-        publish(0.0, turn_speed_);
+        publish_cmd(0.0, turn_speed_);
+        publish_status("SCANNING LEFT", center);
         if (elapsed() >= turn_time_s_) {
-          publish(0.0, 0.0);
+          publish_cmd(0.0, 0.0);
           set_state(State::SETTLE_LEFT);
         }
         break;
 
       case State::SETTLE_LEFT:
-        publish(0.0, 0.0);
+        publish_cmd(0.0, 0.0);
+        publish_status("MEASURING LEFT", center);
         if (elapsed() >= settle_time_s_) {
           left_scan_ = region_distance(0.25, 0.75);
           RCLCPP_INFO(get_logger(), "Left scan: %.2f m", left_scan_);
@@ -185,15 +208,17 @@ private:
         break;
 
       case State::TURN_RIGHT_SCAN:
-        publish(0.0, -turn_speed_);
+        publish_cmd(0.0, -turn_speed_);
+        publish_status("SCANNING RIGHT", center);
         if (elapsed() >= 2.0 * turn_time_s_) {
-          publish(0.0, 0.0);
+          publish_cmd(0.0, 0.0);
           set_state(State::SETTLE_RIGHT);
         }
         break;
 
       case State::SETTLE_RIGHT:
-        publish(0.0, 0.0);
+        publish_cmd(0.0, 0.0);
+        publish_status("MEASURING RIGHT", center);
         if (elapsed() >= settle_time_s_) {
           right_scan_ = region_distance(0.25, 0.75);
           RCLCPP_INFO(get_logger(), "Right scan: %.2f m", right_scan_);
@@ -202,15 +227,17 @@ private:
         break;
 
       case State::RETURN_CENTER:
-        publish(0.0, turn_speed_);
+        publish_cmd(0.0, turn_speed_);
+        publish_status("RETURNING CENTER", center);
         if (elapsed() >= turn_time_s_) {
-          publish(0.0, 0.0);
+          publish_cmd(0.0, 0.0);
           set_state(State::SETTLE_CENTER);
         }
         break;
 
       case State::SETTLE_CENTER:
-        publish(0.0, 0.0);
+        publish_cmd(0.0, 0.0);
+        publish_status("EVALUATING PATH", center);
         if (elapsed() >= settle_time_s_) {
           if (left_scan_ >= scan_clearance_ && right_scan_ >= scan_clearance_) {
             RCLCPP_WARN(get_logger(), "Scan clear L=%.2f R=%.2f: short reverse", left_scan_, right_scan_);
@@ -223,24 +250,27 @@ private:
         break;
 
       case State::REVERSE:
-        publish(reverse_speed_, 0.0);
+        publish_cmd(reverse_speed_, 0.0);
+        publish_status("REVERSING", center);
         if (elapsed() >= reverse_time_s_) {
-          publish(0.0, 0.0);
+          publish_cmd(0.0, 0.0);
           avoid_left_ = left_scan_ >= right_scan_;
           set_state(State::AVOID_TURN);
         }
         break;
 
       case State::AVOID_TURN:
-        publish(0.0, avoid_left_ ? turn_speed_ : -turn_speed_);
+        publish_cmd(0.0, avoid_left_ ? turn_speed_ : -turn_speed_);
+        publish_status(avoid_left_ ? "AVOIDING - TURN LEFT" : "AVOIDING - TURN RIGHT", center);
         if (elapsed() >= turn_time_s_) {
-          publish(0.0, 0.0);
+          publish_cmd(0.0, 0.0);
           set_state(State::DRIVE);
         }
         break;
 
       case State::BLOCKED:
-        publish(0.0, 0.0);
+        publish_cmd(0.0, 0.0);
+        publish_status("BLOCKED - STOP", center);
         if (center > caution_distance_) set_state(State::DRIVE);
         break;
     }
@@ -271,6 +301,7 @@ private:
   double person_hold_s_{0.75};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr yolo_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
