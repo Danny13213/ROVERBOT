@@ -14,35 +14,35 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/string.hpp"
 
 class WebStreamNode : public rclcpp::Node {
 public:
   WebStreamNode() : Node("web_stream_node") {
     port_ = declare_parameter<int>("port", 5000);
     quality_ = declare_parameter<int>("jpeg_quality", 75);
-    raw_topic_ = declare_parameter<std::string>("raw_topic", "/camera/color/image_raw");
     yolo_topic_ = declare_parameter<std::string>("yolo_topic", "/yolo/annotated");
-
-    raw_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      raw_topic_, rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::Image::SharedPtr msg) {
-        image_callback(msg, raw_jpeg_, raw_frame_id_);
-      });
+    status_topic_ = declare_parameter<std::string>("status_topic", "/navigation/status");
 
     yolo_sub_ = create_subscription<sensor_msgs::msg::Image>(
       yolo_topic_, rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::Image::SharedPtr msg) {
-        image_callback(msg, yolo_jpeg_, yolo_frame_id_);
+      std::bind(&WebStreamNode::image_callback, this, std::placeholders::_1));
+
+    status_sub_ = create_subscription<std_msgs::msg::String>(
+      status_topic_, 10,
+      [this](std_msgs::msg::String::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        status_text_ = msg->data;
       });
 
     running_ = true;
     server_thread_ = std::thread(&WebStreamNode::server_loop, this);
     RCLCPP_INFO(get_logger(), "Browser stream: http://<JETSON_IP>:%d", port_);
-    RCLCPP_INFO(get_logger(), "Raw topic: %s", raw_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "YOLO topic: %s", yolo_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "Combined YOLO + obstacle status stream");
   }
 
   ~WebStreamNode() override {
@@ -56,24 +56,36 @@ public:
   }
 
 private:
-  void image_callback(
-      const sensor_msgs::msg::Image::SharedPtr msg,
-      std::vector<uchar> &destination,
-      uint64_t &frame_id) {
+  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
     if (msg->encoding != "bgr8" || msg->data.empty() || msg->width == 0 || msg->height == 0) return;
     const size_t needed = static_cast<size_t>(msg->step) * msg->height;
     if (msg->data.size() < needed || msg->step < msg->width * 3) return;
 
     try {
-      cv::Mat image(
+      cv::Mat source(
         static_cast<int>(msg->height), static_cast<int>(msg->width), CV_8UC3,
         const_cast<unsigned char *>(msg->data.data()), static_cast<size_t>(msg->step));
+      cv::Mat image = source.clone();
+
+      std::string status;
+      {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        status = status_text_;
+      }
+      if (status.empty()) status = "NAVIGATION STATUS: WAITING";
+
+      const int bar_h = 48;
+      cv::rectangle(image, cv::Rect(0, 0, image.cols, std::min(bar_h, image.rows)),
+                    cv::Scalar(0, 0, 0), cv::FILLED);
+      cv::putText(image, status, cv::Point(12, 32),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+
       std::vector<uchar> encoded;
       const std::vector<int> params{cv::IMWRITE_JPEG_QUALITY, quality_};
       if (cv::imencode(".jpg", image, encoded, params)) {
         std::lock_guard<std::mutex> lock(frame_mutex_);
-        destination = std::move(encoded);
-        ++frame_id;
+        jpeg_ = std::move(encoded);
+        ++frame_id_;
       }
     } catch (const std::exception &e) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000, "JPEG conversion failed: %s", e.what());
@@ -95,7 +107,7 @@ private:
     send_all(client, text.data(), text.size());
   }
 
-  void stream_frames(int client, bool yolo) {
+  void stream_frames(int client) {
     send_text(client,
       "HTTP/1.1 200 OK\r\n"
       "Cache-Control: no-cache, no-store, must-revalidate\r\n"
@@ -109,10 +121,8 @@ private:
       uint64_t id = 0;
       {
         std::lock_guard<std::mutex> lock(frame_mutex_);
-        id = yolo ? yolo_frame_id_ : raw_frame_id_;
-        if (id != last_id) {
-          frame = yolo ? yolo_jpeg_ : raw_jpeg_;
-        }
+        id = frame_id_;
+        if (id != last_id) frame = jpeg_;
       }
 
       if (frame.empty() || id == last_id) {
@@ -139,31 +149,24 @@ private:
     if (n <= 0) return;
     const std::string req(request, static_cast<size_t>(n));
 
-    if (req.find("GET /raw") == 0) {
-      stream_frames(client, false);
-      return;
-    }
-
-    if (req.find("GET /yolo") == 0 || req.find("GET /stream") == 0) {
-      stream_frames(client, true);
+    if (req.find("GET /stream") == 0 || req.find("GET /yolo") == 0) {
+      stream_frames(client);
       return;
     }
 
     const std::string body =
       "<!doctype html><html><head>"
       "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-      "<title>ROVERBOT Camera</title>"
+      "<title>ROVERBOT Vision</title>"
       "<style>"
       "body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center}"
-      ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;padding:16px}"
-      ".panel{background:#1b1b1b;border-radius:10px;padding:12px}"
+      ".wrap{max-width:1100px;margin:auto;padding:16px}"
+      ".panel{background:#1b1b1b;border-radius:12px;padding:12px}"
       "img{width:100%;height:auto;border-radius:8px;background:#000}"
-      "h2{margin:16px 0 0}h3{margin:0 0 10px}"
+      "h2{margin:4px 0 14px}"
       "</style></head><body>"
-      "<h2>ROVERBOT - Orbbec Astra Pro</h2>"
-      "<div class='grid'>"
-      "<div class='panel'><h3>Raw Camera</h3><img src='/raw' alt='raw camera stream'></div>"
-      "<div class='panel'><h3>YOLO Detection</h3><img src='/yolo' alt='YOLO annotated stream'></div>"
+      "<div class='wrap'><h2>ROVERBOT - YOLO + Obstacle Detection</h2>"
+      "<div class='panel'><img src='/stream' alt='combined detection stream'></div>"
       "</div></body></html>";
 
     std::ostringstream response;
@@ -208,18 +211,21 @@ private:
 
   int port_{5000};
   int quality_{75};
-  std::string raw_topic_;
   std::string yolo_topic_;
+  std::string status_topic_;
   std::atomic<bool> running_{false};
   int server_fd_{-1};
   std::thread server_thread_;
+
   std::mutex frame_mutex_;
-  std::vector<uchar> raw_jpeg_;
-  std::vector<uchar> yolo_jpeg_;
-  uint64_t raw_frame_id_{0};
-  uint64_t yolo_frame_id_{0};
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr raw_sub_;
+  std::vector<uchar> jpeg_;
+  uint64_t frame_id_{0};
+
+  std::mutex status_mutex_;
+  std::string status_text_;
+
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr yolo_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr status_sub_;
 };
 
 int main(int argc, char **argv) {
