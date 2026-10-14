@@ -32,6 +32,7 @@ public:
     turn_speed_ = declare_parameter<double>("turn_speed", 0.50);
     stop_for_person_ = declare_parameter<bool>("stop_for_person", true);
     person_hold_s_ = declare_parameter<double>("person_hold_s", 0.75);
+    invalid_stop_ratio_ = declare_parameter<double>("invalid_stop_ratio", 0.45);
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/navigation/status", 10);
@@ -91,6 +92,29 @@ private:
     return (now() - last_person_seen_).seconds() <= person_hold_s_;
   }
 
+  double invalid_ratio(double x0f, double x1f, double y0f = 0.05, double y1f = 0.95) const {
+    if (!have_depth_ || width_ <= 0 || height_ <= 0) return 1.0;
+    const int x0 = std::clamp(static_cast<int>(width_ * x0f), 0, width_ - 1);
+    const int x1 = std::clamp(static_cast<int>(width_ * x1f), x0 + 1, width_);
+    const int y0 = std::clamp(static_cast<int>(height_ * y0f), 0, height_ - 1);
+    const int y1 = std::clamp(static_cast<int>(height_ * y1f), y0 + 1, height_);
+
+    size_t total = 0;
+    size_t invalid = 0;
+    for (int y = y0; y < y1; y += 4) {
+      for (int x = x0; x < x1; x += 4) {
+        const size_t offset = static_cast<size_t>(y) * step_ + static_cast<size_t>(x) * 2;
+        if (offset + 1 >= depth_.size()) continue;
+        uint16_t mm = 0;
+        std::memcpy(&mm, &depth_[offset], sizeof(mm));
+        ++total;
+        if (mm == 0 || mm < 100 || mm > 8000) ++invalid;
+      }
+    }
+    if (total == 0) return 1.0;
+    return static_cast<double>(invalid) / static_cast<double>(total);
+  }
+
   double region_distance(double x0f, double x1f, double y0f = 0.05, double y1f = 0.95) const {
     if (!have_depth_ || width_ <= 0 || height_ <= 0) return std::numeric_limits<double>::infinity();
     const int x0 = std::clamp(static_cast<int>(width_ * x0f), 0, width_ - 1);
@@ -148,6 +172,17 @@ private:
     }
 
     const double center = region_distance(0.33, 0.67);
+    const double center_invalid = invalid_ratio(0.33, 0.67);
+
+    if (center_invalid >= invalid_stop_ratio_) {
+      publish_cmd(0.0, 0.0);
+      publish_status("DEPTH BLIND/CLOSE - STOP", center);
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Center depth invalid %.0f%%: possible object inside depth blind zone, stopping",
+        center_invalid * 100.0);
+      return;
+    }
 
     if (person_recent()) {
       publish_cmd(0.0, 0.0);
@@ -299,6 +334,7 @@ private:
   double turn_speed_{0.50};
   bool stop_for_person_{true};
   double person_hold_s_{0.75};
+  double invalid_stop_ratio_{0.45};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
