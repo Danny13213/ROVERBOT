@@ -271,7 +271,7 @@ private:
       case State::BLOCKED:
         publish_cmd(0.0, 0.0);
         publish_status("BLOCKED - STOP", center);
-        if (center > caution_distance_) set_state(State::DRIVE);
+        if (center > stop_distance_) set_state(State::DRIVE);
         break;
     }
   }
