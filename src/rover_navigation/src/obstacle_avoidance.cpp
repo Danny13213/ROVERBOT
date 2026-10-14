@@ -91,7 +91,7 @@ private:
     return (now() - last_person_seen_).seconds() <= person_hold_s_;
   }
 
-  double region_distance(double x0f, double x1f, double y0f = 0.30, double y1f = 0.85) const {
+  double region_distance(double x0f, double x1f, double y0f = 0.05, double y1f = 0.95) const {
     if (!have_depth_ || width_ <= 0 || height_ <= 0) return std::numeric_limits<double>::infinity();
     const int x0 = std::clamp(static_cast<int>(width_ * x0f), 0, width_ - 1);
     const int x1 = std::clamp(static_cast<int>(width_ * x1f), x0 + 1, width_);
@@ -99,9 +99,9 @@ private:
     const int y1 = std::clamp(static_cast<int>(height_ * y1f), y0 + 1, height_);
 
     std::vector<uint16_t> samples;
-    samples.reserve(((x1 - x0) / 8 + 1) * ((y1 - y0) / 8 + 1));
-    for (int y = y0; y < y1; y += 8) {
-      for (int x = x0; x < x1; x += 8) {
+    samples.reserve(((x1 - x0) / 4 + 1) * ((y1 - y0) / 4 + 1));
+    for (int y = y0; y < y1; y += 4) {
+      for (int x = x0; x < x1; x += 4) {
         const size_t offset = static_cast<size_t>(y) * step_ + static_cast<size_t>(x) * 2;
         if (offset + 1 >= depth_.size()) continue;
         uint16_t mm = 0;
@@ -110,7 +110,7 @@ private:
       }
     }
     if (samples.size() < 10) return std::numeric_limits<double>::infinity();
-    const size_t idx = samples.size() / 5;
+    const size_t idx = samples.size() / 10;
     std::nth_element(samples.begin(), samples.begin() + idx, samples.end());
     return samples[idx] / 1000.0;
   }
