@@ -5,11 +5,13 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/string.hpp"
 
 using namespace std::chrono_literals;
 
@@ -26,14 +28,21 @@ public:
     forward_speed_ = declare_parameter<double>("forward_speed", 0.20);
     reverse_speed_ = declare_parameter<double>("reverse_speed", -0.15);
     turn_speed_ = declare_parameter<double>("turn_speed", 0.50);
+    stop_for_person_ = declare_parameter<bool>("stop_for_person", true);
+    person_hold_s_ = declare_parameter<double>("person_hold_s", 0.75);
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
     depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
       "/camera/depth/image_raw", 10,
       std::bind(&ObstacleAvoidance::depth_callback, this, std::placeholders::_1));
+    yolo_sub_ = create_subscription<std_msgs::msg::String>(
+      "/yolo/detections", 10,
+      std::bind(&ObstacleAvoidance::yolo_callback, this, std::placeholders::_1));
+
     timer_ = create_wall_timer(50ms, std::bind(&ObstacleAvoidance::control_loop, this));
     state_start_ = now();
-    RCLCPP_INFO(get_logger(), "Obstacle avoidance ready");
+    last_person_seen_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+    RCLCPP_INFO(get_logger(), "Obstacle avoidance ready (depth + YOLO person stop)");
   }
 
 private:
@@ -61,6 +70,26 @@ private:
     last_depth_ = now();
   }
 
+  void yolo_callback(const std_msgs::msg::String::SharedPtr msg) {
+    if (!stop_for_person_) return;
+
+    // rover_yolo publishes JSON such as:
+    // [{"class":"person","confidence":0.91,...}]
+    if (msg->data.find("\"class\":\"person\"") != std::string::npos) {
+      last_person_seen_ = now();
+      if (!person_blocking_) {
+        person_blocking_ = true;
+        set_state(State::DRIVE);
+        RCLCPP_WARN(get_logger(), "PERSON DETECTED: stopping rover");
+      }
+    }
+  }
+
+  bool person_recent() const {
+    if (!stop_for_person_ || last_person_seen_.nanoseconds() == 0) return false;
+    return (now() - last_person_seen_).seconds() <= person_hold_s_;
+  }
+
   double region_distance(double x0f, double x1f, double y0f = 0.30, double y1f = 0.85) const {
     if (!have_depth_ || width_ <= 0 || height_ <= 0) return std::numeric_limits<double>::infinity();
     const int x0 = std::clamp(static_cast<int>(width_ * x0f), 0, width_ - 1);
@@ -80,7 +109,7 @@ private:
       }
     }
     if (samples.size() < 10) return std::numeric_limits<double>::infinity();
-    const size_t idx = samples.size() / 5;  // 20th percentile: conservative, less noisy than minimum.
+    const size_t idx = samples.size() / 5;
     std::nth_element(samples.begin(), samples.begin() + idx, samples.end());
     return samples[idx] / 1000.0;
   }
@@ -103,6 +132,17 @@ private:
     if (!have_depth_ || (now() - last_depth_).seconds() > 0.5) {
       publish(0.0, 0.0);
       return;
+    }
+
+    if (person_recent()) {
+      publish(0.0, 0.0);
+      return;
+    }
+
+    if (person_blocking_) {
+      person_blocking_ = false;
+      set_state(State::DRIVE);
+      RCLCPP_INFO(get_logger(), "Person no longer detected: resuming depth navigation");
     }
 
     const double center = region_distance(0.33, 0.67);
@@ -145,7 +185,6 @@ private:
         break;
 
       case State::TURN_RIGHT_SCAN:
-        // Turn right for twice as long: from left-looking, through center, to right-looking.
         publish(0.0, -turn_speed_);
         if (elapsed() >= 2.0 * turn_time_s_) {
           publish(0.0, 0.0);
@@ -173,8 +212,6 @@ private:
       case State::SETTLE_CENTER:
         publish(0.0, 0.0);
         if (elapsed() >= settle_time_s_) {
-          // With one front camera we cannot see the rear continuously. Only reverse after
-          // both side scans are clear; otherwise fail safe and stay stopped.
           if (left_scan_ >= scan_clearance_ && right_scan_ >= scan_clearance_) {
             RCLCPP_WARN(get_logger(), "Scan clear L=%.2f R=%.2f: short reverse", left_scan_, right_scan_);
             set_state(State::REVERSE);
@@ -204,7 +241,6 @@ private:
 
       case State::BLOCKED:
         publish(0.0, 0.0);
-        // Stay stopped until the forward view becomes comfortably clear again.
         if (center > caution_distance_) set_state(State::DRIVE);
         break;
     }
@@ -213,8 +249,10 @@ private:
   State state_{State::DRIVE};
   rclcpp::Time state_start_;
   rclcpp::Time last_depth_;
+  rclcpp::Time last_person_seen_;
   bool have_depth_{false};
   bool avoid_left_{true};
+  bool person_blocking_{false};
   int width_{0}, height_{0}, step_{0};
   std::vector<uint8_t> depth_;
   double left_scan_{0.0}, right_scan_{0.0};
@@ -229,9 +267,12 @@ private:
   double forward_speed_{0.20};
   double reverse_speed_{-0.15};
   double turn_speed_{0.50};
+  bool stop_for_person_{true};
+  double person_hold_s_{0.75};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr yolo_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
