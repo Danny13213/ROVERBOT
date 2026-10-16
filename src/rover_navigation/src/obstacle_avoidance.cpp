@@ -89,9 +89,10 @@ private:
 
       if (!person_blocking_ && person_detect_count_ >= person_confirm_frames_) {
         person_blocking_ = true;
-        set_state(State::DRIVE);
+        person_avoidance_ = true;
+        set_state(State::STOP_BEFORE_SCAN);
         RCLCPP_WARN(
-          get_logger(), "PERSON CONFIRMED for %d detection frames: stopping rover",
+          get_logger(), "PERSON CONFIRMED for %d detection frames: stopping and scanning for alternate path",
           person_detect_count_);
       }
     } else {
@@ -174,7 +175,7 @@ private:
 
     const double center = region_distance(0.33, 0.67);
 
-    if (person_recent()) {
+    if (person_recent() && state_ == State::DRIVE) {
       publish_cmd(0.0, 0.0);
       publish_status("PERSON DETECTED - STOP", center);
       return;
@@ -203,7 +204,7 @@ private:
 
       case State::STOP_BEFORE_SCAN:
         publish_cmd(0.0, 0.0);
-        publish_status("STOPPED - PREPARING SCAN", center);
+        publish_status(person_avoidance_ ? "PERSON - PREPARING SCAN" : "STOPPED - PREPARING SCAN", center);
         if (elapsed() >= settle_time_s_) set_state(State::TURN_LEFT_SCAN);
         break;
 
@@ -258,7 +259,26 @@ private:
         publish_cmd(0.0, 0.0);
         publish_status("EVALUATING PATH", center);
         if (elapsed() >= settle_time_s_) {
-          if (left_scan_ >= scan_clearance_ && right_scan_ >= scan_clearance_) {
+          if (person_avoidance_) {
+            const bool left_clear = left_scan_ >= scan_clearance_;
+            const bool right_clear = right_scan_ >= scan_clearance_;
+            if (left_clear || right_clear) {
+              avoid_left_ = left_clear && (!right_clear || left_scan_ >= right_scan_);
+              person_avoidance_ = false;
+              person_blocking_ = false;
+              person_detect_count_ = 0;
+              person_clear_count_ = 0;
+              RCLCPP_WARN(
+                get_logger(), "Person alternate path selected: %s (L=%.2f R=%.2f)",
+                avoid_left_ ? "LEFT" : "RIGHT", left_scan_, right_scan_);
+              set_state(State::AVOID_TURN);
+            } else {
+              RCLCPP_ERROR(
+                get_logger(), "No clear alternate path around person: L=%.2f R=%.2f",
+                left_scan_, right_scan_);
+              set_state(State::BLOCKED);
+            }
+          } else if (left_scan_ >= scan_clearance_ && right_scan_ >= scan_clearance_) {
             RCLCPP_WARN(get_logger(), "Scan clear L=%.2f R=%.2f: short reverse", left_scan_, right_scan_);
             set_state(State::REVERSE);
           } else {
@@ -289,8 +309,11 @@ private:
 
       case State::BLOCKED:
         publish_cmd(0.0, 0.0);
-        publish_status("BLOCKED - STOP", center);
-        if (center > stop_distance_) set_state(State::DRIVE);
+        publish_status(person_avoidance_ ? "PERSON/BLOCKED - STOP" : "BLOCKED - STOP", center);
+        if (center > stop_distance_ && !person_recent()) {
+          person_avoidance_ = false;
+          set_state(State::DRIVE);
+        }
         break;
     }
   }
@@ -302,6 +325,7 @@ private:
   bool have_depth_{false};
   bool avoid_left_{true};
   bool person_blocking_{false};
+  bool person_avoidance_{false};
   int width_{0}, height_{0}, step_{0};
   std::vector<uint8_t> depth_;
   double left_scan_{0.0}, right_scan_{0.0};
