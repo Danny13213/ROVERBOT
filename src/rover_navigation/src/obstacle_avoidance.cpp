@@ -32,6 +32,8 @@ public:
     turn_speed_ = declare_parameter<double>("turn_speed", 0.50);
     stop_for_person_ = declare_parameter<bool>("stop_for_person", true);
     person_hold_s_ = declare_parameter<double>("person_hold_s", 0.75);
+    person_confirm_frames_ = declare_parameter<int>("person_confirm_frames", 3);
+    person_clear_frames_ = declare_parameter<int>("person_clear_frames", 3);
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/navigation/status", 10);
@@ -76,18 +78,41 @@ private:
 
   void yolo_callback(const std_msgs::msg::String::SharedPtr msg) {
     if (!stop_for_person_) return;
-    if (msg->data.find("\"class\":\"person\"") != std::string::npos) {
+
+    const bool person_detected =
+      msg->data.find("\"class\":\"person\"") != std::string::npos;
+
+    if (person_detected) {
       last_person_seen_ = now();
-      if (!person_blocking_) {
+      person_clear_count_ = 0;
+      if (person_detect_count_ < person_confirm_frames_) ++person_detect_count_;
+
+      if (!person_blocking_ && person_detect_count_ >= person_confirm_frames_) {
         person_blocking_ = true;
         set_state(State::DRIVE);
-        RCLCPP_WARN(get_logger(), "PERSON DETECTED: stopping rover");
+        RCLCPP_WARN(
+          get_logger(), "PERSON CONFIRMED for %d detection frames: stopping rover",
+          person_detect_count_);
+      }
+    } else {
+      person_detect_count_ = 0;
+      if (person_blocking_) {
+        ++person_clear_count_;
+        if (person_clear_count_ >= person_clear_frames_) {
+          person_blocking_ = false;
+          person_clear_count_ = 0;
+          set_state(State::DRIVE);
+          RCLCPP_INFO(
+            get_logger(), "Person absent for %d detection frames: resuming depth navigation",
+            person_clear_frames_);
+        }
       }
     }
   }
 
   bool person_recent() const {
-    if (!stop_for_person_ || last_person_seen_.nanoseconds() == 0) return false;
+    if (!stop_for_person_ || !person_blocking_) return false;
+    if (last_person_seen_.nanoseconds() == 0) return false;
     return (now() - last_person_seen_).seconds() <= person_hold_s_;
   }
 
@@ -153,12 +178,6 @@ private:
       publish_cmd(0.0, 0.0);
       publish_status("PERSON DETECTED - STOP", center);
       return;
-    }
-
-    if (person_blocking_) {
-      person_blocking_ = false;
-      set_state(State::DRIVE);
-      RCLCPP_INFO(get_logger(), "Person no longer detected: resuming depth navigation");
     }
 
     switch (state_) {
@@ -299,6 +318,10 @@ private:
   double turn_speed_{0.50};
   bool stop_for_person_{true};
   double person_hold_s_{0.75};
+  int person_confirm_frames_{3};
+  int person_clear_frames_{3};
+  int person_detect_count_{0};
+  int person_clear_count_{0};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
