@@ -32,7 +32,8 @@ public:
     turn_speed_ = declare_parameter<double>("turn_speed", 0.50);
     stop_for_person_ = declare_parameter<bool>("stop_for_person", true);
     person_hold_s_ = declare_parameter<double>("person_hold_s", 0.75);
-    invalid_stop_ratio_ = declare_parameter<double>("invalid_stop_ratio", 0.45);
+    invalid_stop_ratio_ = declare_parameter<double>("invalid_stop_ratio", 0.70);
+    invalid_stop_frames_ = declare_parameter<int>("invalid_stop_frames", 4);
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/navigation/status", 10);
@@ -172,15 +173,21 @@ private:
     }
 
     const double center = region_distance(0.33, 0.67);
-    const double center_invalid = invalid_ratio(0.33, 0.67);
+    const double center_invalid = invalid_ratio(0.40, 0.60, 0.20, 0.80);
 
     if (center_invalid >= invalid_stop_ratio_) {
+      ++invalid_stop_count_;
+    } else {
+      invalid_stop_count_ = 0;
+    }
+
+    if (invalid_stop_count_ >= invalid_stop_frames_) {
       publish_cmd(0.0, 0.0);
       publish_status("DEPTH BLIND/CLOSE - STOP", center);
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Center depth invalid %.0f%%: possible object inside depth blind zone, stopping",
-        center_invalid * 100.0);
+        "Center depth invalid %.0f%% for %d frames: possible object inside depth blind zone, stopping",
+        center_invalid * 100.0, invalid_stop_count_);
       return;
     }
 
@@ -334,7 +341,9 @@ private:
   double turn_speed_{0.50};
   bool stop_for_person_{true};
   double person_hold_s_{0.75};
-  double invalid_stop_ratio_{0.45};
+  double invalid_stop_ratio_{0.70};
+  int invalid_stop_frames_{4};
+  int invalid_stop_count_{0};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
