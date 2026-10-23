@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- iPad app connection (port 9090) -->
+  <include file="$(find-pkg-share rosbridge_server)/launch/rosbridge_websocket_launch.xml"/>
+
+  <!-- Cameras, YOLO, obstacle avoidance, motors -->
+  <include file="$(find-pkg-share rover_bringup)/launch/rover.launch.xml"/>
+
+  <!-- Video stream for the app (port 5000, /stream) -->
+  <node pkg="rover_camera" exec="web_stream_node" name="web_stream" output="screen"/>
+</launch>
