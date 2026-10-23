@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -34,6 +35,7 @@ public:
     person_hold_s_ = declare_parameter<double>("person_hold_s", 0.75);
     person_confirm_frames_ = declare_parameter<int>("person_confirm_frames", 3);
     person_clear_frames_ = declare_parameter<int>("person_clear_frames", 3);
+    enabled_ = declare_parameter<bool>("enabled", false);
 
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/navigation/status", 10);
@@ -46,6 +48,8 @@ public:
       std::bind(&ObstacleAvoidance::yolo_callback, this, std::placeholders::_1));
 
     timer_ = create_wall_timer(50ms, std::bind(&ObstacleAvoidance::control_loop, this));
+    param_cb_ = add_on_set_parameters_callback(
+      std::bind(&ObstacleAvoidance::parameters_callback, this, std::placeholders::_1));
     state_start_ = now();
     last_person_seen_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     RCLCPP_INFO(get_logger(), "Obstacle avoidance ready (depth + YOLO person stop)");
@@ -166,7 +170,35 @@ private:
 
   double elapsed() const { return (now() - state_start_).seconds(); }
 
+  rcl_interfaces::msg::SetParametersResult parameters_callback(
+      const std::vector<rclcpp::Parameter> &params) {
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    for (const auto &p : params) {
+      if (p.get_name() != "enabled") continue;
+      const bool enable = p.as_bool();
+      if (enable && !enabled_) {
+        set_state(State::DRIVE);
+        RCLCPP_INFO(get_logger(), "Autonomous enabled");
+      } else if (!enable && enabled_) {
+        // Stop once so the rover does not keep the last autonomous command.
+        publish_cmd(0.0, 0.0);
+        RCLCPP_INFO(get_logger(), "Autonomous disabled");
+      }
+      enabled_ = enable;
+    }
+
+    return result;
+  }
+
   void control_loop() {
+    // While disabled, stay off /cmd_vel so manual control is not overridden.
+    if (!enabled_) {
+      publish_status("MANUAL", std::numeric_limits<double>::infinity());
+      return;
+    }
+
     if (!have_depth_ || (now() - last_depth_).seconds() > 0.5) {
       publish_cmd(0.0, 0.0);
       publish_status("DEPTH LOST - STOP", std::numeric_limits<double>::infinity());
@@ -319,6 +351,7 @@ private:
   }
 
   State state_{State::DRIVE};
+  bool enabled_{false};
   rclcpp::Time state_start_;
   rclcpp::Time last_depth_;
   rclcpp::Time last_person_seen_;
@@ -352,6 +385,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr yolo_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_;
 };
 
 int main(int argc, char **argv) {
