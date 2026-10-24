@@ -145,8 +145,8 @@ int main(int argc, char **argv) {
         switch (key) {
           case 'w': case 'W': send_movement('F'); break;
           case 's': case 'S': send_movement('B'); break;
-          case 'a': case 'A': send_movement('L'); break;
-          case 'd': case 'D': send_movement('R'); break;
+          case 'a': case 'A': send_movement('R'); break;
+          case 'd': case 'D': send_movement('L'); break;
           case ' ': send_movement('S'); break;
           case '[':
             left_pwm = std::max(0, left_pwm - 5);
