@@ -20,6 +20,8 @@ using namespace std::chrono_literals;
 class ObstacleAvoidance : public rclcpp::Node {
 public:
   ObstacleAvoidance() : Node("obstacle_avoidance") {
+    // Default to sensor-only diagnostics; no motion until explicitly enabled.
+    allow_motion_ = declare_parameter<bool>("allow_motion", false);
     caution_distance_ = declare_parameter<double>("caution_distance", 1.0);
     stop_distance_ = declare_parameter<double>("stop_distance", 0.50);
     too_close_distance_ = declare_parameter<double>("too_close_distance", 0.25);
@@ -92,7 +94,7 @@ private:
       if (!person_blocking_ && person_detect_count_ >= person_confirm_frames_) {
         person_blocking_ = true;
         person_avoidance_ = true;
-        set_state(State::STOP_BEFORE_SCAN);
+        set_state(State::BLOCKED);
         RCLCPP_WARN(
           get_logger(), "PERSON CONFIRMED for %d detection frames: stopping and scanning for alternate path",
           person_detect_count_);
@@ -104,7 +106,7 @@ private:
         if (person_clear_count_ >= person_clear_frames_) {
           person_blocking_ = false;
           person_clear_count_ = 0;
-          set_state(State::DRIVE);
+          // Stay blocked until the operator deliberately restarts the node.
           RCLCPP_INFO(
             get_logger(), "Person absent for %d detection frames: resuming depth navigation",
             person_clear_frames_);
@@ -174,6 +176,11 @@ private:
   double elapsed() const { return (now() - state_start_).seconds(); }
 
   void control_loop() {
+    if (!allow_motion_) {
+      publish_cmd(0.0, 0.0);
+      publish_status("DIAGNOSTIC ONLY - STOP", std::numeric_limits<double>::quiet_NaN());
+      return;
+    }
     if (!have_depth_ || (now() - last_depth_).seconds() > 0.5) {
       publish_cmd(0.0, 0.0);
       publish_status("DEPTH LOST - STOP", std::numeric_limits<double>::infinity());
@@ -206,12 +213,12 @@ private:
       case State::DRIVE:
         if (center <= too_close_distance_) {
           publish_cmd(0.0, 0.0);
-          publish_status("TOO CLOSE - SCANNING", center);
-          RCLCPP_WARN(get_logger(), "TOO CLOSE %.2f m: stop, scan left/right before reversing", center);
+          publish_status("TOO CLOSE - STOP LATCHED", center);
+          RCLCPP_WARN(get_logger(), "TOO CLOSE %.2f m: stop latched; restart only after inspection", center);
           set_state(State::BLOCKED);
         } else if (center <= stop_distance_) {
           publish_cmd(0.0, 0.0);
-          publish_status("OBSTACLE - AVOIDING", center);
+          publish_status("OBSTACLE - STOP LATCHED", center);
           // Do not start an unverified turn next to furniture.
           set_state(State::BLOCKED);
         } else if (center <= caution_distance_) {
@@ -226,11 +233,11 @@ private:
       case State::STOP_BEFORE_SCAN:
         publish_cmd(0.0, 0.0);
         publish_status(person_avoidance_ ? "PERSON - PREPARING SCAN" : "STOPPED - PREPARING SCAN", center);
-        if (elapsed() >= settle_time_s_) set_state(State::TURN_LEFT_SCAN);
+        set_state(State::BLOCKED);
         break;
 
       case State::TURN_LEFT_SCAN:
-        publish_cmd(0.0, turn_speed_);
+        publish_cmd(0.0, 0.0);
         publish_status("SCANNING LEFT", center);
         if (elapsed() >= turn_time_s_) {
           publish_cmd(0.0, 0.0);
@@ -249,7 +256,7 @@ private:
         break;
 
       case State::TURN_RIGHT_SCAN:
-        publish_cmd(0.0, -turn_speed_);
+        publish_cmd(0.0, 0.0);
         publish_status("SCANNING RIGHT", center);
         if (elapsed() >= 2.0 * turn_time_s_) {
           publish_cmd(0.0, 0.0);
@@ -310,7 +317,7 @@ private:
         break;
 
       case State::REVERSE:
-        publish_cmd(reverse_speed_, 0.0);
+        publish_cmd(0.0, 0.0);
         publish_status("REVERSING", center);
         if (elapsed() >= reverse_time_s_) {
           publish_cmd(0.0, 0.0);
@@ -320,7 +327,7 @@ private:
         break;
 
       case State::AVOID_TURN:
-        publish_cmd(0.0, avoid_left_ ? turn_speed_ : -turn_speed_);
+        publish_cmd(0.0, 0.0);
         publish_status(avoid_left_ ? "AVOIDING - TURN LEFT" : "AVOIDING - TURN RIGHT", center);
         if (elapsed() >= turn_time_s_) {
           publish_cmd(0.0, 0.0);
@@ -331,14 +338,12 @@ private:
       case State::BLOCKED:
         publish_cmd(0.0, 0.0);
         publish_status(person_avoidance_ ? "PERSON/BLOCKED - STOP" : "BLOCKED - STOP", center);
-        if (center > caution_distance_ && !person_recent()) {
-          person_avoidance_ = false;
-          set_state(State::DRIVE);
-        }
+        // Deliberately latched: camera clearance alone never restarts motion.
         break;
     }
   }
 
+  bool allow_motion_{false};
   State state_{State::DRIVE};
   rclcpp::Time state_start_;
   rclcpp::Time last_depth_;
