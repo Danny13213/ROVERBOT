@@ -10,7 +10,8 @@ How to start ROVERBOT and drive it from the iPad. Written after testing on Octob
 | Network | UniFi Wi-Fi only (for now) |
 | SSH login | `ssh cad281@10.0.200.126` |
 | ROS code folder | `~/ROVERBOT` (motor, cameras, YOLO, navigation) |
-| Old Python folder | `~/ROVER-BOT` (`camera_stream.py`) |
+| Old Python folder (with a dash) | `~/ROVER-BOT` (`camera_stream.py`) |
+| Camera Python script | `/home/cad281/ROVER-BOT/camera_stream.py` |
 | Start command | `rover` |
 | Rosbridge port (app connection) | `9090` |
 | Video feed port | `5000` (path `/stream`) |
@@ -44,7 +45,7 @@ Then run each part in its own terminal:
 | Video feed | `ros2 run rover_camera web_stream_node` | 5000 |
 | Motors only (manual driving, no autonomous) | `ros2 run rover_motor motor_node` | - |
 
-Manual-only option with the old Python camera: `cd ~/ROVER-BOT && python3 camera_stream.py` (port `5000`). Don't use it together with the ROS cameras or autonomous mode.
+Manual-only option with the old Python camera: `cd ~/ROVER-BOT && python3 camera_stream.py` (port `5000`). Run it from inside `~/ROVER-BOT`, because it needs `astra_camera.py` and `nav_logic.py` from that folder. Don't use it together with the ROS cameras or autonomous mode.
 
 ## Problems we hit and the fixes
 
