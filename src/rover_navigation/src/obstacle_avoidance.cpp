@@ -67,7 +67,9 @@ private:
   };
 
   void depth_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
-    if (msg->encoding != "16UC1" || msg->data.empty()) return;
+    if (msg->encoding != "16UC1" || msg->data.empty() || msg->width == 0 || msg->height == 0 ||
+        msg->step < msg->width * sizeof(uint16_t) ||
+        msg->data.size() < static_cast<size_t>(msg->step) * msg->height) return;
     width_ = static_cast<int>(msg->width);
     height_ = static_cast<int>(msg->height);
     step_ = static_cast<int>(msg->step);
@@ -117,8 +119,8 @@ private:
     return (now() - last_person_seen_).seconds() <= person_hold_s_;
   }
 
-  double region_distance(double x0f, double x1f, double y0f = 0.05, double y1f = 0.95) const {
-    if (!have_depth_ || width_ <= 0 || height_ <= 0) return std::numeric_limits<double>::infinity();
+  double region_distance(double x0f, double x1f, double y0f = 0.15, double y1f = 0.90) const {
+    if (!have_depth_ || width_ <= 0 || height_ <= 0) return std::numeric_limits<double>::quiet_NaN();
     const int x0 = std::clamp(static_cast<int>(width_ * x0f), 0, width_ - 1);
     const int x1 = std::clamp(static_cast<int>(width_ * x1f), x0 + 1, width_);
     const int y0 = std::clamp(static_cast<int>(height_ * y0f), 0, height_ - 1);
@@ -126,16 +128,21 @@ private:
 
     std::vector<uint16_t> samples;
     samples.reserve(((x1 - x0) / 4 + 1) * ((y1 - y0) / 4 + 1));
+    size_t sampled = 0;
     for (int y = y0; y < y1; y += 4) {
       for (int x = x0; x < x1; x += 4) {
         const size_t offset = static_cast<size_t>(y) * step_ + static_cast<size_t>(x) * 2;
         if (offset + 1 >= depth_.size()) continue;
+        ++sampled;
         uint16_t mm = 0;
         std::memcpy(&mm, &depth_[offset], sizeof(mm));
         if (mm >= 100 && mm <= 8000) samples.push_back(mm);
       }
     }
-    if (samples.size() < 10) return std::numeric_limits<double>::infinity();
+    // Missing or sparse depth is UNKNOWN, never free space.
+    if (samples.size() < 10 || sampled == 0 ||
+        static_cast<double>(samples.size()) / sampled < 0.20)
+      return std::numeric_limits<double>::quiet_NaN();
     const size_t idx = samples.size() / 10;
     std::nth_element(samples.begin(), samples.begin() + idx, samples.end());
     return samples[idx] / 1000.0;
@@ -173,7 +180,21 @@ private:
       return;
     }
 
-    const double center = region_distance(0.33, 0.67);
+    // Require valid readings across the width of the robot, not just image center.
+    const double left_front = region_distance(0.12, 0.37);
+    const double center_front = region_distance(0.37, 0.63);
+    const double right_front = region_distance(0.63, 0.88);
+    const double center = std::min({left_front, center_front, right_front});
+    if (!std::isfinite(left_front) || !std::isfinite(center_front) ||
+        !std::isfinite(right_front)) {
+      publish_cmd(0.0, 0.0);
+      publish_status("INVALID DEPTH - STOP", center);
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "Invalid depth in driving corridor; stopping");
+      // Reset the maneuver so stale scan decisions cannot resume motion.
+      set_state(State::BLOCKED);
+      return;
+    }
 
     if (person_recent() && state_ == State::DRIVE) {
       publish_cmd(0.0, 0.0);
@@ -187,15 +208,15 @@ private:
           publish_cmd(0.0, 0.0);
           publish_status("TOO CLOSE - SCANNING", center);
           RCLCPP_WARN(get_logger(), "TOO CLOSE %.2f m: stop, scan left/right before reversing", center);
-          set_state(State::STOP_BEFORE_SCAN);
+          set_state(State::BLOCKED);
         } else if (center <= stop_distance_) {
           publish_cmd(0.0, 0.0);
           publish_status("OBSTACLE - AVOIDING", center);
-          avoid_left_ = region_distance(0.00, 0.33) >= region_distance(0.67, 1.00);
-          set_state(State::AVOID_TURN);
+          // Do not start an unverified turn next to furniture.
+          set_state(State::BLOCKED);
         } else if (center <= caution_distance_) {
           publish_cmd(forward_speed_, 0.0);
-          publish_status("CAUTION", center);
+          publish_status("CAUTION - FIXED MOTOR PWM", center);
         } else {
           publish_cmd(forward_speed_, 0.0);
           publish_status("PATH CLEAR", center);
@@ -271,7 +292,7 @@ private:
               RCLCPP_WARN(
                 get_logger(), "Person alternate path selected: %s (L=%.2f R=%.2f)",
                 avoid_left_ ? "LEFT" : "RIGHT", left_scan_, right_scan_);
-              set_state(State::AVOID_TURN);
+              set_state(State::BLOCKED);
             } else {
               RCLCPP_ERROR(
                 get_logger(), "No clear alternate path around person: L=%.2f R=%.2f",
@@ -280,7 +301,7 @@ private:
             }
           } else if (left_scan_ >= scan_clearance_ && right_scan_ >= scan_clearance_) {
             RCLCPP_WARN(get_logger(), "Scan clear L=%.2f R=%.2f: short reverse", left_scan_, right_scan_);
-            set_state(State::REVERSE);
+            set_state(State::BLOCKED);
           } else {
             RCLCPP_ERROR(get_logger(), "Reverse rejected: scan not clear L=%.2f R=%.2f", left_scan_, right_scan_);
             set_state(State::BLOCKED);
@@ -310,7 +331,7 @@ private:
       case State::BLOCKED:
         publish_cmd(0.0, 0.0);
         publish_status(person_avoidance_ ? "PERSON/BLOCKED - STOP" : "BLOCKED - STOP", center);
-        if (center > stop_distance_ && !person_recent()) {
+        if (center > caution_distance_ && !person_recent()) {
           person_avoidance_ = false;
           set_state(State::DRIVE);
         }
