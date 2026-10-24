@@ -126,7 +126,7 @@ private:
     char command = 'S';
 
     if (std::abs(x) > linear_deadband_) command = x > 0.0 ? 'F' : 'B';
-    else if (std::abs(z) > angular_deadband_) command = z > 0.0 ? 'L' : 'R';
+    else if (std::abs(z) > angular_deadband_) command = z > 0.0 ? 'R' : 'L';
 
     current_command_ = command;
     last_cmd_ = now();
